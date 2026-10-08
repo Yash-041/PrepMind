@@ -1,0 +1,14 @@
+import { Bell, MessageSquare, Moon, SlidersHorizontal } from "lucide-react";
+import { useState } from "react";
+
+const settingRows = [
+  { Icon: Moon, title: "Theme", description: "Use the sidebar toggle to switch light and dark mode." },
+  { Icon: MessageSquare, title: "Chat response style", description: "Step-by-step explanations are enabled for JEE problems." },
+  { Icon: Bell, title: "Study reminders", description: "Get a gentle nudge when your Daily 20 is waiting." },
+];
+
+export default function Settings() {
+  const [compact, setCompact] = useState(false);
+  const [notifications, setNotifications] = useState(true);
+  return <div className="h-full overflow-y-auto"><div className="mx-auto max-w-3xl px-5 py-8 sm:px-8"><p className="text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-400">Workspace controls</p><h1 className="mt-2 font-heading text-4xl font-semibold tracking-tight" data-testid="settings-heading">Settings</h1><p className="mt-3 text-sm text-slate-500">Keep PrepMind comfortable for long study sessions.</p><div className="mt-8 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm dark:border-slate-800 dark:bg-slate-900"><div className="flex items-center gap-4 border-b border-slate-100 p-5 dark:border-slate-800"><SlidersHorizontal size={18} className="text-indigo-500" /><div><h2 className="text-sm font-semibold">Preferences</h2><p className="mt-1 text-xs text-slate-500">Small choices that shape the study experience.</p></div></div>{settingRows.map(({ Icon, title, description }, index) => <div key={title} className="flex items-center gap-4 border-b border-slate-100 p-5 last:border-0 dark:border-slate-800"><Icon size={18} className="text-slate-400" /><div className="min-w-0 flex-1"><h3 className="text-sm font-semibold">{title}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{description}</p></div>{index === 0 ? <span className="text-xs text-slate-400" data-testid="settings-theme-note">System toggle</span> : <button onClick={() => index === 1 ? setCompact((value) => !value) : setNotifications((value) => !value)} className={`relative h-6 w-11 rounded-full ${index === 1 ? (compact ? "bg-indigo-600" : "bg-slate-300 dark:bg-slate-700") : (notifications ? "bg-indigo-600" : "bg-slate-300 dark:bg-slate-700")}`} aria-label={`Toggle ${title}`} data-testid={`settings-toggle-${index}`}><span className={`absolute top-1 size-4 rounded-full bg-white transition-transform ${((index === 1 && compact) || (index === 2 && notifications)) ? "translate-x-6" : "translate-x-1"}`} /></button>}</div>)}</div></div></div>;
+}

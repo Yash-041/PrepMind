@@ -1,0 +1,13 @@
+import { ArrowLeft, ArrowRight, MailCheck } from "lucide-react";
+import { Link } from "react-router-dom";
+import { BrandMark } from "@/components/BrandMark";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { getPendingDemoPasswordReset, getRegisteredDemoEmail } from "@/lib/demoAuth";
+
+export default function ForgotPasswordSent() {
+  const request = getPendingDemoPasswordReset();
+  const registeredEmail = getRegisteredDemoEmail();
+  const resetPath = request ? `/reset-password?token=${encodeURIComponent(request.token)}` : "/login";
+
+  return <div className="flex min-h-svh items-center justify-center bg-slate-100 px-5 dark:bg-slate-950"><div className="w-full max-w-md"><div className="mb-8 flex justify-center"><BrandMark /></div><div className="rounded-3xl border border-slate-200 bg-white p-7 shadow-xl shadow-slate-200/40 dark:border-slate-800 dark:bg-slate-900 dark:shadow-none"><div className="flex size-12 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"><MailCheck size={22} /></div><p className="mt-6 text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-400" data-testid="reset-email-kicker">Check your email</p><h1 className="mt-2 font-heading text-3xl font-semibold tracking-tight" data-testid="reset-email-heading">Reset link sent.</h1><p className="mt-3 text-sm leading-6 text-slate-500" data-testid="reset-email-description">We sent a 15-minute password reset link to the registered email <strong className="text-slate-800 dark:text-slate-200">{registeredEmail}</strong>.</p><div className="mt-6 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800 dark:border-amber-500/30 dark:bg-amber-500/10 dark:text-amber-200" data-testid="reset-email-demo-note"><strong>Phase 1 demo inbox:</strong> email delivery is MOCKED. Use the button below as the reset link that would arrive by email.</div>{request ? <Link to={resetPath} className={`${buttonVariants()} mt-5 h-11 w-full gap-2 bg-indigo-600 hover:bg-indigo-700`} data-testid="demo-reset-email-link">Open reset link <ArrowRight size={16} /></Link> : <p className="mt-5 text-sm text-rose-600" data-testid="reset-request-expired">This reset request expired. Start again from Login.</p>}<Link to="/login" className="mt-5 flex items-center justify-center gap-2 text-sm font-semibold text-slate-500 hover:text-indigo-600" data-testid="reset-email-back-link"><ArrowLeft size={15} /> Back to login</Link></div></div></div>;
+}
