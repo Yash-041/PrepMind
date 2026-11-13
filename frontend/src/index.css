@@ -143,3 +143,24 @@ button, a, input, textarea, select {
   background: #c7d2fe;
   color: #1e1b4b;
 }
+/* Chat answers: wide equations scroll inside the bubble instead of overflowing it. */
+.chat-markdown .katex-display,
+.math-text .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    max-width: 100%;
+    padding: 0.25rem 0;
+    margin: 0.75rem 0;
+}
+.chat-markdown .katex-display > .katex,
+.math-text .katex-display > .katex {
+    white-space: nowrap;
+}
+.chat-markdown .katex,
+.math-text .katex {
+    font-size: 1.08em;
+    line-height: 1.3;
+}
+.chat-markdown .katex-error {
+    color: inherit;
+}

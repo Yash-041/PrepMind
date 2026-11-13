@@ -1,11 +1,13 @@
-"""Server-side date helpers. The pod clock is UTC — anchor "today" here, never in the browser."""
-
-import os
-from datetime import datetime
+from datetime import datetime, date, timezone
 from zoneinfo import ZoneInfo
+from backend.lib.config import settings
 
 
-def today_iso(tz: str | None = None) -> str:
-    """Today's date as YYYY-MM-DD in `tz` (default: APP_TZ env, else UTC)."""
-    zone = tz or os.environ.get("APP_TZ", "UTC")
-    return datetime.now(ZoneInfo(zone)).strftime("%Y-%m-%d")
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def local_today() -> date:
+    """Returns current calendar date in configured student timezone (default Asia/Kolkata)."""
+    tz = ZoneInfo(settings.TIMEZONE)
+    return datetime.now(tz).date()

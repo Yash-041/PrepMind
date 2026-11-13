@@ -1,7 +1,7 @@
 import type { Question } from "@/lib/types";
 
 export const dailyQuestions: Question[] = [
-  { id: "d1", subject: "Physics", topic: "Newton's Laws", difficulty: "Easy", question: "A body of mass 2 kg is acted upon by a net force of 10 N. What is its acceleration?", options: ["2 m/s²", "5 m/s²", "10 m/s²", "20 m/s²"], answer: 1 },
+  { id: "d1", subject: "Physics", topic: "Newton's Laws", difficulty: "Easy", question: "Yash of mass 70 kg is acted upon by a net force of 10 N. What is its acceleration?", options: ["2 m/s²", "5 m/s²", "10 m/s²", "20 m/s²"], answer: 1 },
   { id: "d2", subject: "Chemistry", topic: "Atomic Structure", difficulty: "Easy", question: "Which quantum number determines the shape of an orbital?", options: ["Principal", "Azimuthal", "Magnetic", "Spin"], answer: 1 },
   { id: "d3", subject: "Mathematics", topic: "Quadratic Equations", difficulty: "Medium", question: "If the roots of x² − 5x + k = 0 differ by 1, find k.", options: ["4", "5", "6", "7"], answer: 2 },
   { id: "d4", subject: "Physics", topic: "Rotational Motion", difficulty: "Hard", question: "The moment of inertia of a thin ring about its diameter is:", options: ["MR²", "MR²/2", "2MR²", "MR²/4"], answer: 1 },
@@ -23,7 +23,7 @@ export const dailyQuestions: Question[] = [
   { id: "d20", subject: "Chemistry", topic: "Solutions", difficulty: "Easy", question: "A solution with pH 7 at 25°C is:", options: ["Acidic", "Basic", "Neutral", "Buffer only"], answer: 2 },
 ];
 
-export const examQuestions = dailyQuestions.slice(0, 10).map((question, index) => ({
+export const examQuestions = dailyQuestions.map((question, index) => ({
   ...question,
   id: `e${index + 1}`,
   difficulty: index % 3 === 0 ? "JEE Advanced" : question.difficulty,

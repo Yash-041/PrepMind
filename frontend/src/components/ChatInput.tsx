@@ -25,7 +25,7 @@ export function ChatInput({ disabled, isGenerating, onSend, onStop }: ChatInputP
           {isGenerating ? <Button type="button" variant="outline" size="sm" onClick={onStop} className="gap-2" data-testid="chat-stop-generating-button"><Square size={13} fill="currentColor" /> Stop</Button> : <Button type="button" size="icon" disabled={!value.trim() || disabled} onClick={submit} className="size-9 rounded-xl bg-indigo-600 hover:bg-indigo-700" aria-label="Send message" data-testid="chat-send-button"><Send size={16} /></Button>}
         </div>
       </div>
-      <p className="mt-2 text-center text-[10px] text-slate-400" data-testid="chat-input-hint"><WandSparkles size={11} className="mr-1 inline" />PrepMind AI uses a demo tutor in Phase 1 · Enter to send, Shift + Enter for a new line</p>
+      <p className="mt-2 text-center text-[10px] text-slate-400" data-testid="chat-input-hint"><WandSparkles size={11} className="mr-1 inline" />Answers cite your NCERT textbooks · Enter to send, Shift + Enter for a new line</p>
     </div>
   );
 }

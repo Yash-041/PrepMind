@@ -1,0 +1,798 @@
+================================================================================
+                    PREPMIND AI — HOW THE WHOLE PROJECT WORKS (A TO Z)
+================================================================================
+Last updated: 24 Oct 2026
+
+PrepMind AI is a JEE Main / JEE Advanced preparation app for Class 11-12 students.
+It has three core tools and a few supporting pages:
+
+  1. AI Chatbot (AI Tutor)   - answers doubts, grounded in NCERT books with citations
+  2. Daily 20                - 20 questions every day, LeetCode-style streak
+  3. Exam Simulator          - full JEE Main mock paper (75 questions, 180 min),
+                               difficulty adapts to the student
+  +  Progress report, Profile, Settings, and full email/Google authentication
+
+Contents
+  1.  Tech stack
+  2.  Folder structure
+  3.  Running the project
+  4.  Configuration (.env)
+  5.  Architecture overview
+  6.  Database structure (every table)
+  7.  Authentication flow
+  8.  Knowledge base: PDF ingestion and embedding
+  9.  AI Tutor: the RAG agent (LangGraph)
+  10. Chat titles
+  11. Question bank: generating and checking questions
+  12. Exam Simulator agent (LangGraph) and adaptive difficulty
+  13. Daily 20 and streaks
+  14. Progress tracking, weak topics and the Progress report
+  15. Output formatting: Markdown, LaTeX, chemistry, citations
+  16. Frontend architecture
+  17. API reference
+  18. Background work, caching and performance
+  19. All AI models and what each one does
+  20. Current status and known issues
+
+
+--------------------------------------------------------------------------------
+1. TECH STACK
+--------------------------------------------------------------------------------
+Backend
+  - Python, FastAPI (REST + Server-Sent Events), uvicorn
+  - SQLAlchemy 2 ORM, psycopg 3
+  - PostgreSQL 18 + pgvector extension (vector search), run in Docker
+  - LangGraph (agent workflows), LangChain (Groq + Google Gemini model clients)
+  - Groq SDK (question generation), pypdf (PDF text), SymPy (maths checker)
+  - bcrypt (password hashing), PyJWT (login tokens), google-auth (Google sign-in)
+  - SMTP (Gmail App Password) for verification / reset emails
+
+Frontend
+  - React 19 + TypeScript, Vite 8
+  - Tailwind CSS 4 + shadcn/ui components (base-ui primitives)
+  - TanStack React Query (server data + cache), React Router 7
+  - react-markdown + remark-gfm + remark-math + rehype-katex + KaTeX mhchem
+  - lucide-react icons, recharts (available, not used yet)
+
+AI providers
+  - Groq: GPT-OSS 120B (chat answers, question writing), GPT-OSS 20B (answer
+    checking, chat titles)
+  - Google Gemini: gemini-embedding-001 (all embeddings), Gemini chat models
+    (optional alternative for answers)
+
+
+--------------------------------------------------------------------------------
+2. FOLDER STRUCTURE
+--------------------------------------------------------------------------------
+PrepMind/
+  start-dev.ps1            One-command dev start (Docker DB + backend + frontend)
+  docker-compose.yml       PostgreSQL + pgvector on host port 5433
+  working.txt              This document
+  myvenv/                  Python virtual environment
+  memory/SPEC.md           Original Phase 1 spec (outdated: describes mocks)
+
+  backend/
+    server.py              FastAPI app: CORS, routers, startup (init_db + seeding)
+    lib/
+      config.py            All settings, read from backend/.env
+      db.py                Engine, session, init_db (creates tables + adds new columns)
+      security.py          Password hashing, JWT creation/decoding, current user
+      dates.py             utc_now(), local_today() (in settings.TIMEZONE)
+    models/                Database tables (SQLAlchemy)
+      user.py  chat.py  knowledge.py  practice.py  exam.py  progress.py
+    schemas/api_schemas.py Request/response validation (Pydantic)
+    routers/               HTTP endpoints
+      auth.py  chats.py  daily_practice.py  exams.py  progress.py
+    services/              Business logic and AI
+      llm.py               Chat model registry + text clean-up (content_text)
+      embeddings.py        Gemini embeddings (+ offline mock embeddings)
+      pdf_ingestion.py     PDF -> text -> chunks -> embeddings -> pgvector (CLI)
+      kb_sources.py        NCERT chapter list, chapter text for question writing
+      rag_graph.py         AI Tutor RAG agent (LangGraph)
+      chat_titles.py       Short AI titles for new chats
+      question_bank.py     Writes + checks questions from NCERT passages (CLI)
+      exam_graph.py        Exam paper preparation agent (LangGraph)
+      daily_graph.py       Builds the Daily 20 set
+      difficulty.py        Adaptive difficulty levels and mixes
+      streaks.py           Daily 20 streak calculations
+      progress_tracker.py  Per-topic accuracy and weak-topic severity
+      math_verifier.py     SymPy expression equivalence (see known issues)
+      email_service.py     SMTP emails (prints to console if SMTP not set)
+      seed_bank.py         Seed questions, exam templates, synthetic notes
+    data/
+      knowledge_base/      Source PDFs (books/, formulas/, previous_year_questions/)
+      cache/passages/      Cached extracted chapter text (JSON) for question writing
+    alembic/               Initial migration only (init_db handles later columns)
+    tests/test_prepmind.py Backend tests (pytest, in-memory SQLite)
+
+  frontend/
+    vite.config.ts         Dev server on :5173, proxies /api -> http://localhost:8000
+    src/
+      main.tsx  App.tsx    Entry point, routes, login guard (Protected)
+      pages/               One file per screen
+      components/          Shared UI (AppShell, Sidebar, ChatMessage, MathText, ...)
+        daily/             StreakCard, DailyResultView
+        exam/              ExamSetup, ExamRunner, ExamResultView, DifficultyMix
+        ui/                shadcn/ui primitives (button, dialog, ...)
+      lib/
+        api.ts             All HTTP calls (+ chat streaming reader)
+        types.ts           TypeScript types for API data
+        session.ts         Login token + cached user in localStorage
+        queryClient.ts     Shared React Query client
+        markdown.ts        Maths/Markdown clean-up before rendering
+        difficulty.ts      Text for difficulty level rules
+        demoAuth.ts, demoQuestions.ts   Leftovers from the Phase 1 demo
+
+
+--------------------------------------------------------------------------------
+3. RUNNING THE PROJECT
+--------------------------------------------------------------------------------
+One command (PowerShell, from PrepMind/):
+    .\start-dev.ps1
+  1. Starts Docker Desktop if needed, then `docker compose up -d` (database).
+  2. Waits for the database (pg_isready, up to 60 s).
+  3. Opens a "PrepMind backend" window:
+       myvenv\Scripts\python.exe -m uvicorn backend.server:app --port 8000 --reload
+  4. Opens a "PrepMind frontend" window: npm run dev -- --port 5173 --strictPort
+  Open http://localhost:5173. API docs: http://localhost:8000/docs
+  Port 5173 is fixed because Google sign-in and email links point to it.
+
+On backend start (server.py lifespan):
+  - init_db(): creates the pgvector extension, adds columns introduced after the
+    first release (ALTER TABLE ... ADD COLUMN IF NOT EXISTS), creates missing tables.
+  - seed_initial_data(): seed questions, exam templates, synthetic study notes.
+
+Command-line tools (run from PrepMind/):
+  Embed PDFs:      .\myvenv\Scripts\python.exe -m backend.services.pdf_ingestion [--force]
+  Pre-build bank:  .\myvenv\Scripts\python.exe -m backend.services.question_bank --exams 2 [--subject Physics]
+  Tests:           .\myvenv\Scripts\python.exe -m pytest backend/tests/test_prepmind.py
+
+
+--------------------------------------------------------------------------------
+4. CONFIGURATION (backend/.env, see backend/.env.example)
+--------------------------------------------------------------------------------
+  FRONTEND_URL            Used in email links and CORS (http://localhost:5173)
+  TIMEZONE                Student calendar day, default Asia/Kolkata (Daily 20 + streaks)
+  DATABASE_URL            postgresql+psycopg://...@localhost:5433/prepmind
+  JWT_SECRET_KEY / JWT_ALGORITHM (HS256) / JWT_EXPIRE_MINUTES (1440 = 24 h)
+  SMTP_HOST/PORT/USER/PASSWORD, EMAIL_FROM_NAME
+  EMAIL_VERIFICATION_EXPIRE_HOURS (24), PASSWORD_RESET_EXPIRE_MINUTES (30)
+  GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET
+  LLM_PROVIDER + LLM_MODEL  Default chat model, e.g. groq + openai/gpt-oss-120b
+  GROQ_API_KEY            Groq models
+  LLM_API_KEY             Google Gemini key (embeddings + Gemini chat)
+  GEMINI_CHAT_MODEL       Gemini chat model shown in the model list
+  QUESTION_GEN_MODEL      Writes questions (default groq:openai/gpt-oss-120b)
+  QUESTION_CHECK_MODEL    Solves them independently (default groq:openai/gpt-oss-20b)
+  CHAT_TITLE_MODEL        Names chats (default groq:openai/gpt-oss-20b)
+  EMBEDDING_PROVIDER      gemini | mock
+  EMBEDDING_MODEL         gemini-embedding-001
+  EMBEDDING_DIMENSIONS    768
+  RAG_TOP_K (5), RAG_MIN_SIMILARITY (0.55)
+
+Frontend (frontend/.env): VITE_GOOGLE_CLIENT_ID. The API base comes from
+VITE_API_BASE_URL (empty = use the Vite /api proxy).
+
+
+--------------------------------------------------------------------------------
+5. ARCHITECTURE OVERVIEW
+--------------------------------------------------------------------------------
+
+   Browser (React app on :5173)
+        |  fetch /api/...  (JWT in "Authorization: Bearer <token>")
+        |  chat answers arrive as Server-Sent Events (text/event-stream)
+        v
+   Vite dev proxy  --->  FastAPI backend (:8000)
+                          |
+                          |-- routers/        validate request, check user, call services
+                          |-- services/       business logic + AI agents
+                          |       |
+                          |       |-- LangGraph agents: RAG tutor, exam paper prep
+                          |       |-- Groq API (GPT-OSS 120B / 20B)
+                          |       |-- Gemini API (embeddings, optional chat)
+                          |       |-- SMTP (emails)
+                          |       '-- background threads (paper prep, bank top-ups,
+                          |                               chat titles)
+                          v
+                    PostgreSQL + pgvector (Docker, :5433)
+                      users, chats, documents + vector chunks, questions,
+                      daily sets, exams, topic progress
+
+   Disk: backend/data/knowledge_base/*.pdf  (NCERT books, formula sheets, PYQs)
+         backend/data/cache/passages/*.json (extracted chapter text)
+
+Request lifecycle (example: GET /api/progress/report)
+  1. React Query calls api.getProgressReport() -> fetch("/api/progress/report")
+  2. Vite proxies to FastAPI. get_current_user() decodes the JWT and loads the User.
+  3. The router queries the database, builds the JSON and returns it.
+  4. A 401 response clears the session and sends the browser to /login.
+
+Data loop that makes the app adaptive
+
+   Exam / Daily 20 answers
+          |
+          v
+   progress_tracker.record_topic_outcome()  -> user_topic_progress (accuracy, severity)
+          |                                         |
+          |                                         |-> Daily 20: 14 weak-topic questions
+          |                                         |-> Progress page: weak topics
+          v                                         '-> bank top-up for weak chapters
+   exam accuracy -> difficulty.exam_level() -> next exam's Easy/Medium/Hard mix
+
+
+--------------------------------------------------------------------------------
+6. DATABASE STRUCTURE
+--------------------------------------------------------------------------------
+All ids are UUID strings (36 chars). Timestamps are timezone-aware (UTC).
+
+users
+  id, full_name, email (unique), password_hash (null for Google-only accounts),
+  target_exam ("JEE Main" | "JEE Advanced"), student_class ("Class 11" |
+  "Class 12" | "Class 12 pass out"), auth_provider ("email" | "google"),
+  google_sub (unique), is_verified, verified_at, created_at, updated_at
+
+conversations                        (one chat in the sidebar)
+  id, user_id -> users (cascade), title (200), subject, created_at, updated_at
+messages
+  id, conversation_id -> conversations (cascade), role ("user" | "assistant"),
+  content (text), sources (JSON list of cited excerpts), is_fallback,
+  model (which AI answered), created_at
+
+documents                            (one ingested PDF or the synthetic notes)
+  id, filename, file_path (unique, relative to knowledge_base/), file_hash
+  (sha256, detects changed files), subject, doc_type ("book" | "formula" |
+  "pyq" | "sample"), exam, student_class, embedding_model (e.g.
+  "gemini:gemini-embedding-001:768"), page_count, created_at
+document_chunks                      (searchable pieces of a document)
+  id, document_id -> documents (cascade), chunk_index, content, subject,
+  chapter, page_number, embedding VECTOR(768), created_at
+  Index: HNSW on embedding with cosine distance (m=16, ef_construction=64)
+
+questions                            (shared question bank)
+  id, subject, topic (NCERT chapter title), exam_type, difficulty ("Easy" |
+  "Medium" | "Hard"), question_text, options (JSON, 4 strings; empty for
+  numerical), correct_answer, explanation, marks (4), negative_marks (1),
+  is_pyq, pyq_year, is_generated, math_verified, question_type ("mcq" |
+  "numerical"), source ("seed" | "kb"), source_ref ("NCERT Class 12 Physics,
+  Ch. 3: Current Electricity, p. 7"), concept, generated_by, content_hash
+  (unique, stops duplicates), created_at
+
+daily_practice_sets                  (one per user per day per target exam)
+  id, user_id, set_date, target_exam, is_submitted, created_at
+  Unique: (user_id, set_date, target_exam)
+daily_practice_questions
+  id, set_id -> sets, question_id -> questions, order_index (1-20)
+daily_practice_attempts              (one per set: set_id unique)
+  id, set_id, user_id, score, max_score, correct_count, incorrect_count,
+  unanswered_count, accuracy, topic_breakdown (JSON), submitted_at
+daily_practice_answers
+  id, attempt_id, question_id, selected_option, is_correct, marks_awarded
+
+exam_templates                       (paper patterns)
+  id, code (unique, e.g. "JEE_MAIN_FULL"), name, exam_type, description,
+  duration_minutes (180), total_questions (75), subject_distribution (JSON:
+  {"Physics": {"mcq": 20, "numerical": 5}, ...}), default_marks,
+  default_negative_marks, is_demo_pattern
+exam_attempts                        (one mock paper taken by a student)
+  id, user_id, template_id, exam_type, title, status ("preparing" |
+  "in_progress" | "submitted" | "failed"), prep_ready, prep_total, prep_error,
+  difficulty_level ("foundation" | "jee_main" | "advanced"), duration_minutes,
+  started_at, expires_at, submitted_at, total_score, max_score, correct_count,
+  incorrect_count, unanswered_count, accuracy, subject_breakdown (JSON),
+  topic_breakdown (JSON)
+exam_attempt_questions               (frozen copy of each question in the paper)
+  id, attempt_id, source_question_id -> questions, order_index, subject, topic,
+  difficulty, question_text, options, correct_answer, explanation, marks,
+  negative_marks, question_type, source_ref
+  (A snapshot, so later edits to the bank never change a past paper.)
+exam_answers
+  id, attempt_id, attempt_question_id, selected_option, marked_for_review,
+  time_spent_seconds, is_correct, marks_awarded, updated_at
+
+user_topic_progress                  (per student, per chapter)
+  id, user_id, subject, topic, attempted_count, correct_count, incorrect_count,
+  accuracy (%), recent_accuracy (moving average), weak_severity ("none" |
+  "low" | "medium" | "high"), last_attempted_at
+  Unique: (user_id, subject, topic)
+
+Schema changes: new columns are added in lib/db.py init_db() with
+"ADD COLUMN IF NOT EXISTS"; new tables are created by create_all().
+
+
+--------------------------------------------------------------------------------
+7. AUTHENTICATION FLOW
+--------------------------------------------------------------------------------
+Email signup
+  1. POST /api/auth/signup: name, email, exam, class, password (stored as bcrypt hash).
+     The account starts unverified.
+  2. A verification email is sent in the background with a link
+     /verify-email?token=<JWT, typ=email_verification, 24 h>.
+  3. The VerifyEmail page posts the token to /api/auth/verify-email -> is_verified = true.
+  4. Login (POST /api/auth/login) is refused with code "email_not_verified" until then.
+     The Login page then offers "Resend verification" (60 s cooldown).
+
+Login
+  - Returns an access token (JWT, typ=access, 24 h) + the user profile.
+  - The frontend keeps both in localStorage (lib/session.ts) and sends the token
+    on every request. Protected routes redirect to /login without a token.
+
+Google sign-in
+  - The frontend gets a Google ID token (GoogleSignInButton) and posts it to
+    /api/auth/google. The backend verifies it with Google, requires a verified
+    Google email, then creates the account or links it by email.
+
+Forgot / reset password
+  - /forgot-password emails a link with a JWT (typ=password_reset, 30 min) that
+    contains a fingerprint of the current password hash, so the link stops
+    working after one use. The reset page validates the link first, then sets
+    the new password (and marks the email verified).
+  - Forgot-password and resend always return the same message, so they can't be
+    used to find out which emails have accounts.
+
+Profile: PATCH /api/auth/me (name, exam, class), POST /api/auth/change-password.
+
+
+--------------------------------------------------------------------------------
+8. KNOWLEDGE BASE: PDF INGESTION AND EMBEDDING   (services/pdf_ingestion.py)
+--------------------------------------------------------------------------------
+Source files: backend/data/knowledge_base/
+  books/<subject>/class 11|12 <subject>/*.pdf   NCERT chapters, appendices, answer keys
+  formulas/*.pdf                                formula sheets
+  previous_year_questions/*.pdf                 JEE Main papers 2021-2025
+  (129 PDFs in total.)
+
+Pipeline for each PDF
+  1. Change check: sha256 of the file + the embedding model name. Unchanged
+     files already embedded with the same model are skipped, so the command can
+     be re-run any time and only does new or changed work. --force re-embeds all.
+  2. Text extraction: pypdf, page by page.
+  3. Chunking: whitespace collapsed, 1,200-character chunks with 200 characters
+     of overlap, cut at a sentence end (". ") when one is in the second half of
+     the window so formulas aren't split. Chunks under 40 characters are dropped.
+  4. Garbled-text filter: some NCERT PDFs have broken font maps
+     ("eleFtroYalenFe"). A chunk is dropped if at least 5 different words have a
+     lower-UPPER-lower pattern and they are over 8% of its words.
+  5. Metadata from the path: subject (folder or filename), doc_type (books /
+     formulas / previous_year_questions), exam, class.
+  6. Chapter title: for books, the default chat model reads the first 2 pages
+     and names the chapter ("Moving Charges and Magnetism"), because file names
+     like "lech101" are useless in citations.
+  7. Embedding: all chunks embedded BEFORE the database is touched, so an API
+     failure leaves the old version intact.
+  8. Save: the old Document is replaced; new Document + DocumentChunks (with
+     page numbers) are committed.
+  9. Clean-up: Documents whose PDF was deleted are removed (synthetic notes kept).
+  10. Daily quota: if Gemini reports a per-day quota error, the run stops cleanly
+      and resumes from the same place next time.
+  Scanned PDFs with no text layer are reported as "no_text" (they need OCR).
+
+Embeddings (services/embeddings.py)
+  - Model: Gemini gemini-embedding-001, 768 dimensions (EMBEDDING_DIMENSIONS).
+  - Separate task types: RETRIEVAL_DOCUMENT for chunks, RETRIEVAL_QUERY for
+    questions (improves search quality).
+  - Vectors are normalised to length 1 (Gemini only returns unit vectors at 3,072
+    dimensions).
+  - Batches of 50; retries up to 10 times on 429/503, waiting the time Gemini
+    suggests ("retry in 41s"); fails fast on a per-day quota.
+  - Without a Gemini key a deterministic "mock" embedding is used (word hashes
+    into 768 buckets), so the app still runs offline with weaker search.
+  - Each Document stores the embedding model name; search only uses chunks from
+    the active model, and changing the model triggers re-embedding.
+
+Synthetic study notes: seed_bank adds 4 short formula notes (Physics,
+Chemistry, Maths) as a "sample" document so search works before any PDF is embedded.
+
+
+--------------------------------------------------------------------------------
+9. AI TUTOR: THE RAG AGENT (LangGraph)   (services/rag_graph.py, routers/chats.py)
+--------------------------------------------------------------------------------
+Graph:
+
+   condense_question -> retrieve_context -> assess_context
+        -> grounded answer  (good excerpts found)
+        -> general answer   (no excerpt good enough)
+        -> validate_answer (finalize)
+
+Steps
+  1. condense_question: if the chat has history, the model rewrites the latest
+     message as a standalone search query ("why is it 2/5?" ->
+     "why is the moment of inertia of a solid sphere 2/5 MR^2"). It uses the
+     last 6 messages. The first message is searched as is.
+  2. retrieve_context (the retriever):
+     - Subject detection: keyword lists per subject (force, velocity, ...;
+       enthalpy, mole, ...; integral, matrix, ...).
+     - The query is embedded (RETRIEVAL_QUERY).
+     - pgvector cosine-distance search, top RAG_TOP_K x 2 = 10 chunks, only from
+       documents embedded with the active model (HNSW index).
+     - Scoring: similarity = 1 - distance; +0.03 bonus when the chunk's subject
+       matches the detected subject; re-sorted by that score.
+     - Only chunks with similarity >= 0.55 (0.15 for mock vectors) are kept,
+       and the best 5 (RAG_TOP_K) are used.
+     - If embedding fails (quota/outage), retrieval is skipped and the answer
+       says the textbook search is unavailable.
+  3. assess_context: "grounded" if at least one chunk passed, else "general".
+  4. generate answer:
+     - Grounded: the model receives numbered excerpts
+       "[1] file | chapter | page N <text>" and must cite facts as [1], [2][3].
+     - General: the model must start by saying the knowledge base had no match,
+       then answer from its own JEE knowledge with no citations.
+     - The system prompt asks for: step-by-step teaching, a closing
+       formula/takeaway, LaTeX ($...$ inline, $$...$$ display), mhchem for
+       chemistry ($\ce{CO2}$), upright units, short display equations
+       (aligned for long derivations), table rows on one line with inline maths
+       only, citations at the end of sentences (never inside maths), no
+       invented books, pages or PYQ years, and steering back to JEE topics.
+  5. validate_answer (finalize): keeps only the sources actually cited, removes
+     citations to excerpt numbers that were never provided, and stores for each
+     source: file, type, subject, chapter, page, first 280 characters, similarity.
+
+Streaming (what the student sees as typing)
+  POST /api/chats/{id}/messages/stream returns Server-Sent Events:
+    user_message  -> the saved question (saved first, so it survives a dropped connection)
+    status        -> "Searching your textbooks…", then "Found N relevant textbook
+                     passages. Writing answer…"
+    token (many)  -> answer text as it is generated
+    done          -> the saved assistant message, chat title and subject
+    error         -> a friendly message
+  Steps 1-3 run through LangGraph; the answer is then streamed from the model
+  directly, then finalize runs. If the stream breaks midway, the text already
+  shown is kept.
+
+Fallbacks (no key, quota, outage)
+  - With excerpts: shows the closest textbook excerpt with its source.
+  - Without: "The AI tutor is temporarily unavailable" or a demo message.
+  - These are saved with is_fallback = true.
+
+Model choice: the default is LLM_PROVIDER:LLM_MODEL. GET /api/chats/models lists
+GPT-OSS 120B, GPT-OSS 20B, Qwen (Groq) and the Gemini model; a request may pass
+"model" to use another available one.
+
+
+--------------------------------------------------------------------------------
+10. CHAT TITLES   (services/chat_titles.py)
+--------------------------------------------------------------------------------
+  - A new chat is called "New JEE Doubt Session" until its first message.
+  - On the first message, the title is immediately set to the message shortened
+    at a word boundary (max 48 characters, with "…"), with Markdown/maths
+    symbols removed.
+  - At the same time, a background thread asks CHAT_TITLE_MODEL (GPT-OSS 20B)
+    for a 3-6 word Title Case title ("Hund's Rule and Nitrogen Configuration").
+    When the answer finishes, the AI title (if valid: 2-10 words, max 70 chars,
+    no LaTeX) replaces the shortened one. This adds no waiting time (it takes
+    about 1.7 s, during the answer).
+  - Chats can be renamed (PATCH) and deleted with a confirmation dialog (DELETE
+    removes all messages too).
+
+
+--------------------------------------------------------------------------------
+11. QUESTION BANK: GENERATING AND CHECKING QUESTIONS   (services/question_bank.py)
+--------------------------------------------------------------------------------
+Questions are shared by all students. Exams and Daily 20 only pick questions a
+student hasn't seen (in any exam or Daily 20 set).
+
+Source text (services/kb_sources.py)
+  - Reads the chapter PDFs directly (not the embeddings), so question writing
+    works even for subjects not yet embedded.
+  - Chapter names come from a fixed NCERT syllabus table (Physics, Chemistry,
+    Maths x Class 11/12), matched by chapter number in the file name, so a
+    chapter always has the same name. Weak-topic tracking depends on this.
+  - Answer keys, appendices and supplements are skipped.
+  - Extracted text is cached in data/cache/passages/<chapter>.json and
+    refreshed when the PDF changes (size + modified time).
+  - A passage = 3 consecutive chunks (~3,000 characters) at a random place.
+
+Pipeline for one batch (at most 3 questions per passage)
+  1. Sample a passage from a chapter.
+  2. QUESTION_GEN_MODEL (GPT-OSS 120B) writes MCQ and/or numerical questions as
+     JSON, following rules: test a concept at JEE Main level (not book trivia);
+     self-contained (never "the passage"); exactly one correct MCQ option with
+     three plausible mistakes; no "all/none of the above"; numerical answers are
+     one number with unit and rounding stated; LaTeX/mhchem; inline maths only
+     and one-line options; a worked explanation; a 2-6 word concept; a
+     difficulty. When a difficulty is requested, all questions are written at
+     it (Easy = one concept, 1-2 steps; Medium = typical JEE Main, 2-3 steps;
+     Hard = several concepts or a non-obvious insight) and stored with it.
+  3. Structural checks: 4 distinct options, valid answer index, numeric answer,
+     question at least 25 characters, no references to "the passage".
+  4. Independent check: QUESTION_CHECK_MODEL (GPT-OSS 20B) solves the questions
+     WITHOUT the answer key. A question is kept only if its answer matches
+     (numbers within 0.1% or 0.01).
+  5. De-duplication: sha256 of the normalised question text (unique), then saved
+     with source "kb" and a source_ref ("NCERT Class 12 Physics, Ch. 3: ..., p. 7").
+
+generate_questions() runs 3 batches in parallel, spreads them across chapters,
+retries dropped questions up to a cap, and stops with a clear message when the
+Groq daily quota is used up.
+
+
+--------------------------------------------------------------------------------
+12. EXAM SIMULATOR AGENT (LangGraph) AND ADAPTIVE DIFFICULTY
+    (services/exam_graph.py, services/difficulty.py, routers/exams.py)
+--------------------------------------------------------------------------------
+Paper pattern (JEE_MAIN_FULL): per subject 20 MCQ + 5 numerical = 75 questions,
+180 minutes, +4 correct, -1 wrong, 0 unanswered (MCQ and numerical).
+
+Adaptive levels (decided from the student's submitted mocks, in order)
+    level        Easy  Medium  Hard   move up at      move down below
+    Foundation    50%    30%    20%    50% accuracy          -
+    JEE Main      30%    50%    20%    70% accuracy         35%
+    Advanced      20%    40%    40%        -                55%
+  - Everyone starts at Foundation.
+  - Moving up also needs at least half the paper attempted.
+  - The gap between up and down bars stops students switching every paper.
+  - The level is stored on each attempt (difficulty_level).
+
+Starting a paper (POST /api/exams/attempts)
+  - Only one active paper per student; starting again resumes it.
+  - The attempt is created as "preparing" with the student's level, then the
+    agent runs in a background thread.
+
+Agent graph:   select_from_bank -> generate_missing -> assemble_paper
+  1. select_from_bank: for each subject and type, the count is split by the
+     level's mix (largest remainder, e.g. 20 MCQ at Foundation = 10 Easy,
+     6 Medium, 4 Hard) and unseen bank questions are picked per difficulty,
+     spread over as many chapters as possible. Shortfalls are recorded per
+     difficulty.
+  2. generate_missing: missing questions are generated at the exact missing
+     difficulty, preferring chapters not yet in the paper. If generation still
+     falls short (or the quota runs out), the gap is filled from unseen bank
+     questions of the nearest difficulty (Hard -> Medium -> Easy, etc.) instead
+     of failing. Progress (prep_ready / prep_total) is saved as it goes.
+  3. assemble_paper: questions are copied into exam_attempt_questions (MCQs
+     first, then numericals, per subject, NTA layout), empty answers are
+     created, and only now is the 180-minute timer started (status
+     "in_progress").
+  - If preparation fails, the attempt is "failed" with a message; questions
+    already written stay in the bank, so "Try again" continues from there.
+  - After a server restart, opening a "preparing" paper resumes preparation.
+
+Taking the paper (frontend ExamRunner)
+  - Question palette per subject (not visited / not answered / answered /
+    marked / answered + marked), Section A (MCQ) and Section B (numerical).
+  - Answers, marks and time per question autosave every 2.5 s (PUT .../answers).
+  - The timer counts down from the server's remaining time; at zero the paper
+    submits itself. The server also auto-submits on any request after expiry.
+  - Answer keys and chapter names are never sent before submission.
+
+Marking (on submit)
+  - MCQ: exact option match. Numerical: number match within tolerance.
+  - Score, correct/incorrect/unanswered, accuracy (correct / attempted),
+    per-subject and per-chapter breakdowns.
+  - Every attempted question updates user_topic_progress (section 14).
+  - A background job generates Easy/Medium questions for the weak chapters.
+
+Result page: score, subject scores, chapters to work on (with severity),
+level panel (level, right answers per difficulty, next paper's level: moved
+up / stays / drops), full review with solutions, filters and source pages.
+
+Exam setup page: paper pattern, the student's level with its mix bar and rule,
+how many questions are ready vs need generating (with a time estimate), the
+marking scheme and past papers.
+
+
+--------------------------------------------------------------------------------
+13. DAILY 20 AND STREAKS   (services/daily_graph.py, services/streaks.py)
+--------------------------------------------------------------------------------
+Building the set (first visit of the day, GET /api/daily-practice/today)
+  - One set per student per calendar day (in TIMEZONE) per target exam.
+  - Single-correct MCQs only.
+  - Up to 14 questions from weak chapters (high severity first, then lowest
+    accuracy), at most 4 per chapter, ordered Easy -> Medium -> Hard.
+  - The rest (at least 6) are revision questions, round-robin across Physics,
+    Chemistry and Maths, ordered Medium -> Hard -> Easy.
+  - Fresh bank questions first, then seed questions, repeats only as a last resort.
+  - Concurrent first visits can't create two sets (unique constraint + retry).
+
+Answering
+  - No marks are shown: students see right / wrong / unanswered only.
+  - Answers are kept in the browser (localStorage, per set) until submitted, so
+    a refresh doesn't lose them. Clicking a selected option clears it.
+  - Submitting with unanswered questions asks for confirmation.
+  - Answer keys are only sent after submission.
+
+Result: right / wrong / unanswered / streak, subject breakdown, review of every
+question with the correct answer and solution, filters.
+
+Streak rules (LeetCode style)
+  - A day counts only if THAT day's set is submitted on the same calendar day.
+  - The streak stays alive until midnight: if today isn't done yet, it counts
+    back from yesterday.
+  - Submitting an old set later never fills a missed day.
+  - GET /api/daily-practice/streak returns current streak, longest streak,
+    total days solved, solved_today, the next reset time (midnight) and a
+    28-day calendar (date, solved, accuracy).
+  - Shown in: the StreakCard (4-week calendar with day numbers, month, Solved /
+    Today key, countdown "Submit within 3h 20m to keep your streak") and a
+    flame counter in the top bar of every page (orange when today is done).
+  - At midnight the page reloads the new day's set on its own.
+
+
+--------------------------------------------------------------------------------
+14. PROGRESS TRACKING, WEAK TOPICS AND THE PROGRESS REPORT
+    (services/progress_tracker.py, routers/progress.py)
+--------------------------------------------------------------------------------
+Per answered question (exam or Daily 20), for (student, subject, chapter):
+  - attempted / correct / incorrect counts, accuracy = correct / attempted
+  - recent_accuracy = 0.6 x previous + 0.4 x latest (100 or 0)
+  - weak_severity:
+        attempted >= 2 and accuracy < 50%  -> high
+        attempted >= 2 and accuracy < 70%  -> medium
+        attempted >= 1 and accuracy < 75%  -> low
+        otherwise                           -> none
+  Unanswered questions are not counted.
+
+GET /api/progress/report (the Progress page, one call)
+  - stats: questions attempted/correct, accuracy, Daily 20 sets, mock exams,
+    exam minutes (submitted - started, capped at the duration), current streak
+  - subjects: attempted, correct, accuracy, chapters, weak chapters
+  - weak_topics (top 6 by severity, then accuracy) and strong_topics (2+
+    attempts, >= 75%)
+  - recent_activity: last 8 Daily 20 sets and exams (Daily 20 shown as
+    "x/20 right", exams as score/max; exams link to their result)
+  - The page also shows a recommendation (weakest chapter, or a first step for
+    new students, or a mock exam when there are no weak topics).
+Older endpoints /overview, /weak-topics and /subjects are still used by Profile.
+
+
+--------------------------------------------------------------------------------
+15. OUTPUT FORMATTING: MARKDOWN, LATEX, CHEMISTRY, CITATIONS
+--------------------------------------------------------------------------------
+Backend clean-up (services/llm.py content_text)
+  - Joins Gemini content parts, removes <think> blocks, converts \( \) to $ $
+    and \[ \] to $$ $$.
+
+Frontend rendering
+  - Chat answers: components/ChatMessage.tsx. Questions, options, explanations
+    (exam + Daily 20): components/MathText.tsx.
+  - Both run lib/markdown.ts normalizeMath() first:
+      * \( \) / \[ \] -> $ / $$ (some models write those)
+      * a multi-line $$...$$ block that starts mid-line (usually inside a table
+        cell) is turned into one-line inline maths. Otherwise the line break
+        ends the table row, the table falls apart and raw LaTeX leaks out.
+  - Then react-markdown with remark-gfm (tables, lists), remark-math and
+    rehype-katex (LaTeX), plus KaTeX mhchem for \ce{} chemistry.
+  - Chat citations: [1], [2][3] outside maths/code become small numbered
+    badges; the "N textbook sources" panel lists file, chapter and page.
+  - Chat messages have copy buttons; the chat view follows new text unless the
+    student scrolls up, and always jumps to the latest message when a chat is
+    opened or a message is sent.
+
+
+--------------------------------------------------------------------------------
+16. FRONTEND ARCHITECTURE
+--------------------------------------------------------------------------------
+Routes (App.tsx). All except the auth pages need a login token:
+  /                AI Chatbot (Home). "/?chat=<id>" opens a chat.
+  /daily           Daily 20
+  /exam            Exam Simulator. "/exam?attempt=<id>" opens a paper/result.
+  /progress        Progress report
+  /profile         Profile (edit name/exam/class, change password, logout)
+  /settings        Settings (display only for now)
+  /login /signup /check-email /verify-email /forgot-password
+  /forgot-password-sent /reset-password
+
+Layout: AppShell = Sidebar (new chat, core tools, recent chats with search and
+delete, Progress/Profile/Settings, theme toggle) + top bar (streak flame,
+theme, profile avatar).
+
+Server data: React Query. Main cache keys:
+  ["chats"], ["chat", id], ["daily-today"], ["daily-streak"],
+  ["daily-result", setId], ["exam-history"], ["exam-bank-status"],
+  ["exam-attempt", id], ["exam-result", id], ["progress-report"], ["me"]
+Mutations update or invalidate these keys so screens stay in sync.
+
+Browser storage: login token + user (session.ts), theme, Daily 20 draft answers.
+
+API layer (lib/api.ts): one request() helper (JSON, Bearer token, error
+messages from FastAPI, 401 -> logout), plus streamChatMessage() which reads
+the SSE stream and calls onUserMessage / onStatus / onToken / onDone. Stop
+generating aborts the request.
+
+
+--------------------------------------------------------------------------------
+17. API REFERENCE   (all under /api; * = needs login)
+--------------------------------------------------------------------------------
+Health    GET  /health
+Auth      POST /auth/signup, /auth/verify-email, /auth/resend-verification,
+               /auth/login, /auth/google, /auth/forgot-password,
+               /auth/reset-password/validate, /auth/reset-password
+          GET  /auth/me*          PATCH /auth/me*      POST /auth/change-password*
+Chats*    GET  /chats             POST /chats          GET /chats/models
+          GET  /chats/{id}        PATCH /chats/{id}    DELETE /chats/{id}
+          POST /chats/{id}/messages          (whole answer at once)
+          POST /chats/{id}/messages/stream   (SSE)
+Daily 20* GET  /daily-practice/today         POST /daily-practice/generate
+          GET  /daily-practice/streak        GET  /daily-practice/history
+          GET  /daily-practice/{set_id}      POST /daily-practice/{set_id}/submit
+          GET  /daily-practice/{set_id}/result
+Exams*    GET  /exams/templates   GET /exams/bank-status   GET /exams/history
+          POST /exams/attempts    GET /exams/attempts/{id}
+          PUT  /exams/attempts/{id}/answers  POST /exams/attempts/{id}/submit
+          GET  /exams/attempts/{id}/result   DELETE /exams/attempts/{id}
+Progress* GET  /progress/report, /progress/overview, /progress/weak-topics,
+               /progress/subjects
+Interactive docs: http://localhost:8000/docs
+
+
+--------------------------------------------------------------------------------
+18. BACKGROUND WORK, CACHING AND PERFORMANCE
+--------------------------------------------------------------------------------
+  - Exam paper preparation: background thread per attempt; progress polled by
+    the frontend every 3 s.
+  - Weak-topic top-up after each exam/Daily 20: generates up to 4 unseen
+    Easy/Medium questions for each of the 6 weakest chapters.
+  - Chat titles: thread pool of 4, waited for at most 8 s.
+  - Emails: FastAPI BackgroundTasks.
+  - Caches: chapter text on disk (data/cache/passages), chapter list and
+    passages in memory (lru_cache), Groq client reused.
+  - Rate limits handled: Groq SDK retries on 429; Gemini embedding retries with
+    the suggested wait; daily quotas stop work cleanly with a clear message.
+  - Vector search uses an HNSW index (fast approximate cosine search).
+
+
+--------------------------------------------------------------------------------
+19. ALL AI MODELS AND WHAT EACH ONE DOES
+--------------------------------------------------------------------------------
+  Role                         Model (default)                Where
+  Tutor answers (streamed)     groq:openai/gpt-oss-120b       rag_graph.py
+  Follow-up query rewriting    same as the answer model       rag_graph.py
+  Chat titles                  groq:openai/gpt-oss-20b        chat_titles.py
+  Chapter titles at ingestion  default chat model             pdf_ingestion.py
+  Question writer              groq:openai/gpt-oss-120b       question_bank.py
+  Question checker (solver)    groq:openai/gpt-oss-20b        question_bank.py
+  Document + query embeddings  gemini-embedding-001 (768)     embeddings.py
+  Optional answer models       GPT-OSS 20B, Qwen (Groq), Gemini   llm.py
+
+LangGraph agents
+  - RAG tutor: condense -> retrieve -> assess -> grounded/general -> finalize
+  - Exam paper: select_from_bank -> generate_missing -> assemble_paper
+Rule-based (no AI): Daily 20 selection, difficulty levels, weak-topic severity,
+streaks, marking.
+
+
+--------------------------------------------------------------------------------
+20. CURRENT STATUS AND KNOWN ISSUES
+--------------------------------------------------------------------------------
+Status
+  - Knowledge base: 52 of 129 PDFs embedded (Chemistry and most Maths). The rest
+    (Physics, Class 12 Maths ch. 13, lech205, formula sheets, 34 PYQ papers)
+    continue as the Gemini free-tier daily quota allows; re-run the ingestion
+    command each day.
+  - Question bank: about 200 questions; Hard questions are scarce, so new
+    papers generate the missing Easy/Hard ones at the requested difficulty.
+  - Tests: the newer tests pass; 5 older tests fail (signup now requires email
+    verification, and the maths checker bug below).
+
+Known issues (from the code review; not yet fixed)
+  Critical
+  - backend/.env and frontend/.env were committed in the first commit (API keys
+    and passwords are in git history).
+  - Pre-registration account takeover: an unverified email/password account
+    created by someone else becomes usable after the real owner signs in with Google.
+  - JWT_SECRET_KEY has a public default if missing.
+  High
+  - math_verifier never works: SymPy can't create numbers (NameError: Integer),
+    so every comparison returns False.
+  - Exam submit can race the last autosave and lose the final answers;
+    overlapping autosaves can overwrite newer answers with older ones.
+  - An exam can be marked twice if two submits arrive together (topic progress
+    counted twice).
+  - Changing or resetting a password doesn't log out existing sessions.
+  Medium
+  - Switching target exam gives a second Daily 20 set the same day.
+  - A double Daily 20 submit returns a 500 instead of 409.
+  - Two tabs can start two exam papers at once.
+  - frontend/.env sets VITE_API_URL but the code reads VITE_API_BASE_URL.
+  - Signup schema allows 6-character passwords (UI and reset require 8).
+  - Chat title in POST /chats has no length limit (column is 200).
+  - Stopping an answer leaves a question without a reply in the chat history.
+  - An empty model reply is shown as a fallback but not marked as one.
+  - Profile: password can change even when the profile save shows an error.
+  Low
+  - A failed chat send clears the typed message.
+  - "-" or "." alone counts as a numerical answer (marked wrong, not unanswered).
+  - Image upload, voice input, like/dislike and Settings toggles do nothing yet.
+  - Exam time per question is only recorded when moving between questions.
+  - Rate limits and "preparing" tracking are per server process.
+  - start-dev.ps1 starts the backend even if the database never became ready.
+================================================================================

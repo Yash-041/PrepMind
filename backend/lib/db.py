@@ -1,38 +1,70 @@
-"""Shared Mongo handle — import `client`/`db` from here (server.py, routers, seed.py)."""
+from sqlalchemy import create_engine, inspect, text
+from sqlalchemy.orm import sessionmaker, DeclarativeBase, Session
+from typing import Generator
+from backend.lib.config import settings
 
-import logging
-import os
-from pathlib import Path
+engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True)
 
-from dotenv import load_dotenv
-from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ASCENDING, DESCENDING, IndexModel
-
-load_dotenv(Path(__file__).parent.parent / ".env")
-
-mongo_url = os.environ["MONGO_URL"]
-client = AsyncIOMotorClient(mongo_url)
-db = client[os.environ["DB_NAME"]]
-
-logger = logging.getLogger(__name__)
-
-# One entry per collection: every field a route filters, sorts, or dedupes on. Applied by ensure_indexes() at startup.
-INDEXES: dict[str, list[IndexModel]] = {
-    "status_checks": [IndexModel([("timestamp", DESCENDING)], name="timestamp_desc")],
-    "chats": [
-        IndexModel([("id", ASCENDING)], name="chat_id", unique=True),
-        IndexModel([("user_id", ASCENDING), ("updated_at", DESCENDING)], name="chat_user_updated"),
-    ],
-    "messages": [
-        IndexModel([("chat_id", ASCENDING), ("created_at", ASCENDING)], name="message_chat_created"),
-    ],
-}
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
-async def ensure_indexes() -> None:
-    for collection, models in INDEXES.items():
-        for model in models:  # one at a time so a bad spec skips only itself
-            try:
-                await db[collection].create_indexes([model])
-            except Exception as exc:  # never block boot on an index; the log line names what to fix
-                logger.error("ensure_indexes(%s.%s): %s", collection, model.document["name"], exc)
+class Base(DeclarativeBase):
+    pass
+
+
+def init_db() -> None:
+    """Initialize the pgvector extension and create tables."""
+    import backend.models  # noqa: F401 - registers all models on Base.metadata
+
+    with engine.begin() as conn:
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+        # Knowledge tables only hold data derived from the PDFs, so an outdated
+        # schema (JSON embeddings) is dropped and rebuilt by the next ingestion.
+        inspector = inspect(conn)
+        if inspector.has_table("users"):
+            # Columns added after the first release; create_all doesn't alter existing tables.
+            conn.execute(text(
+                "ALTER TABLE users "
+                "ADD COLUMN IF NOT EXISTS is_verified BOOLEAN NOT NULL DEFAULT FALSE, "
+                "ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ"
+            ))
+        if inspector.has_table("questions"):
+            conn.execute(text(
+                "ALTER TABLE questions "
+                "ADD COLUMN IF NOT EXISTS question_type VARCHAR(20) NOT NULL DEFAULT 'mcq', "
+                "ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'seed', "
+                "ADD COLUMN IF NOT EXISTS source_ref VARCHAR(255), "
+                "ADD COLUMN IF NOT EXISTS concept VARCHAR(160), "
+                "ADD COLUMN IF NOT EXISTS generated_by VARCHAR(100), "
+                "ADD COLUMN IF NOT EXISTS content_hash VARCHAR(64) UNIQUE"
+            ))
+            conn.execute(text("CREATE INDEX IF NOT EXISTS ix_questions_source ON questions (source)"))
+        if inspector.has_table("exam_attempts"):
+            conn.execute(text(
+                "ALTER TABLE exam_attempts "
+                "ADD COLUMN IF NOT EXISTS prep_ready INTEGER NOT NULL DEFAULT 0, "
+                "ADD COLUMN IF NOT EXISTS prep_total INTEGER NOT NULL DEFAULT 0, "
+                "ADD COLUMN IF NOT EXISTS prep_error TEXT, "
+                "ADD COLUMN IF NOT EXISTS difficulty_level VARCHAR(20) NOT NULL DEFAULT 'foundation'"
+            ))
+        if inspector.has_table("exam_attempt_questions"):
+            conn.execute(text(
+                "ALTER TABLE exam_attempt_questions "
+                "ADD COLUMN IF NOT EXISTS question_type VARCHAR(20) NOT NULL DEFAULT 'mcq', "
+                "ADD COLUMN IF NOT EXISTS source_ref VARCHAR(255)"
+            ))
+        if inspector.has_table("messages"):
+            conn.execute(text("ALTER TABLE messages ADD COLUMN IF NOT EXISTS model VARCHAR(100)"))
+        if inspector.has_table("documents"):
+            doc_cols = {c["name"] for c in inspector.get_columns("documents")}
+            if "embedding_model" not in doc_cols:
+                conn.execute(text("DROP TABLE IF EXISTS document_chunks, documents CASCADE"))
+    Base.metadata.create_all(bind=engine)
+
+
+def get_db() -> Generator[Session, None, None]:
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()

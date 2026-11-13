@@ -1,19 +1,44 @@
-// Session boundary: auth is an httpOnly cookie the backend owns; the frontend's one
-// duty is wiping the react-query cache so one account's data never renders for the next.
-import { queryClient } from "./queryClient";
-import { apiPost } from "./api";
-
-// Call after every successful login/signup.
-export function beginSession(): void {
-  queryClient.clear();
+export interface SessionUser {
+  id: string;
+  full_name: string;
+  email: string;
+  target_exam: "JEE Main" | "JEE Advanced";
+  student_class: "Class 11" | "Class 12" | "Class 12 pass out";
+  auth_provider: string;
+  is_verified: boolean;
+  has_password: boolean;
 }
 
-// Call from every sign-out control; the hard redirect resets all in-memory state.
-export async function endSession(redirectTo: string = "/login"): Promise<void> {
+/** Replace the cached user (e.g. after a profile edit) and tell the header to refresh. */
+export function updateSessionUser(user: SessionUser): void {
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+  window.dispatchEvent(new Event("prepmind-profile-updated"));
+}
+
+const TOKEN_KEY = "prepmind_access_token";
+const USER_KEY = "prepmind_user_profile";
+
+export function saveSession(token: string, user: SessionUser): void {
+  localStorage.setItem(TOKEN_KEY, token);
+  localStorage.setItem(USER_KEY, JSON.stringify(user));
+}
+
+export function getAccessToken(): string | null {
+  return localStorage.getItem(TOKEN_KEY);
+}
+
+export function getSessionUser(): SessionUser | null {
+  const raw = localStorage.getItem(USER_KEY);
+  if (!raw) return null;
   try {
-    await apiPost("/auth/logout");
-  } finally {
-    queryClient.clear();
-    window.location.assign(redirectTo);
+    return JSON.parse(raw) as SessionUser;
+  } catch {
+    return null;
   }
+}
+
+export function clearSession(): void {
+  localStorage.removeItem(TOKEN_KEY);
+  localStorage.removeItem(USER_KEY);
+  localStorage.removeItem("prepmind-chat-id");
 }

@@ -1,33 +1,102 @@
-import { useEffect, useMemo, useState } from "react";
-import { ArrowLeft, ArrowRight, Check, Clock3, Flag, Play, RotateCcw, ShieldCheck, Trophy } from "lucide-react";
-import { examQuestions } from "@/lib/demoQuestions";
-import type { Question } from "@/lib/types";
+import { useState } from "react";
+import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useSearchParams } from "react-router-dom";
+import { AlertTriangle, LoaderCircle, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ExamSetup } from "@/components/exam/ExamSetup";
+import { ExamRunner } from "@/components/exam/ExamRunner";
+import { ExamResultView } from "@/components/exam/ExamResultView";
+import { api, ApiError } from "@/lib/api";
+import { queryClient } from "@/lib/queryClient";
+import type { ExamAttempt } from "@/lib/types";
 
-type ExamState = "setup" | "running" | "result";
+function CenteredCard({ children }: { children: ReactNode }) {
+  return <div className="flex h-full items-center justify-center overflow-y-auto p-5"><div className="w-full max-w-md rounded-3xl border border-slate-200 bg-white p-7 text-center shadow-sm dark:border-slate-800 dark:bg-slate-900">{children}</div></div>;
+}
+
+function Preparing({ attempt, onCancel }: { attempt: ExamAttempt; onCancel: () => void }) {
+  const pct = attempt.prep_total ? Math.round((attempt.prep_ready / attempt.prep_total) * 100) : 0;
+  return (
+    <CenteredCard>
+      <div className="mx-auto flex size-12 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"><Sparkles size={22} /></div>
+      <h1 className="mt-5 font-heading text-2xl font-semibold tracking-tight" data-testid="exam-preparing-heading">Preparing your paper</h1>
+      <p className="mt-2 text-sm leading-6 text-slate-500">Writing questions from your NCERT chapters. A second model checks every answer key. The 180-minute timer starts only when the paper is ready.</p>
+      <div className="mt-6 h-2.5 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-full rounded-full bg-indigo-600 transition-[width] duration-700" style={{ width: `${pct}%` }} data-testid="exam-preparing-bar" /></div>
+      <p className="mt-2 text-sm font-semibold tabular-nums" data-testid="exam-preparing-count">{attempt.prep_ready} / {attempt.prep_total} questions ready</p>
+      <p className="mt-4 text-xs text-slate-400">You can leave this page. Preparation continues and the paper waits for you under Exam Simulator.</p>
+      <button onClick={onCancel} className="mt-5 text-sm font-semibold text-slate-500 hover:text-rose-600" data-testid="exam-preparing-cancel">Cancel</button>
+    </CenteredCard>
+  );
+}
+
+function AttemptView({ attemptId, onExit, onOpen }: { attemptId: string; onExit: () => void; onOpen: (id: string) => void }) {
+  const attempt = useQuery({
+    queryKey: ["exam-attempt", attemptId],
+    queryFn: () => api.getExamAttempt(attemptId),
+    refetchInterval: (query) => (query.state.data?.status === "preparing" ? 3000 : false),
+  });
+  const submitted = attempt.data?.status === "submitted";
+  const result = useQuery({ queryKey: ["exam-result", attemptId], queryFn: () => api.getExamResult(attemptId), enabled: submitted });
+  const [busy, setBusy] = useState(false);
+
+  const refreshLists = () => {
+    void queryClient.invalidateQueries({ queryKey: ["exam-history"] });
+    void queryClient.invalidateQueries({ queryKey: ["exam-bank-status"] });
+  };
+  const exit = () => { refreshLists(); onExit(); };
+  const discard = async (thenRetry: boolean) => {
+    setBusy(true);
+    try {
+      await api.discardExamAttempt(attemptId);
+      refreshLists();
+      if (thenRetry) onOpen((await api.startExamAttempt()).id);
+      else onExit();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (attempt.isLoading || (submitted && result.isLoading)) {
+    return <div className="flex h-full items-center justify-center text-slate-500"><LoaderCircle className="animate-spin" /></div>;
+  }
+  if (attempt.error || result.error || !attempt.data) {
+    const err = attempt.error ?? result.error;
+    return (
+      <CenteredCard>
+        <AlertTriangle size={30} className="mx-auto text-rose-500" />
+        <p className="mt-4 text-sm text-slate-600 dark:text-slate-300">{err instanceof ApiError ? err.message : "Couldn't load this paper."}</p>
+        <Button onClick={exit} variant="outline" className="mt-5">Back to mock tests</Button>
+      </CenteredCard>
+    );
+  }
+
+  const data = attempt.data;
+  if (data.status === "preparing") return <Preparing attempt={data} onCancel={() => void discard(false)} />;
+  if (data.status === "failed") {
+    return (
+      <CenteredCard>
+        <AlertTriangle size={30} className="mx-auto text-amber-500" />
+        <h1 className="mt-4 font-heading text-xl font-semibold tracking-tight">The paper couldn't be prepared</h1>
+        <p className="mt-2 text-sm leading-6 text-slate-500" data-testid="exam-failed-message">{data.prep_error}</p>
+        <p className="mt-2 text-xs text-slate-400">Questions already written stay in the bank, so a retry continues from there.</p>
+        <div className="mt-6 flex justify-center gap-2">
+          <Button variant="outline" disabled={busy} onClick={() => void discard(false)}>Back</Button>
+          <Button disabled={busy} onClick={() => void discard(true)} className="bg-indigo-600 hover:bg-indigo-700" data-testid="exam-retry-button">Try again</Button>
+        </div>
+      </CenteredCard>
+    );
+  }
+  if (data.status === "in_progress") {
+    return <ExamRunner key={data.id} attempt={data} onSubmitted={() => { refreshLists(); void queryClient.invalidateQueries({ queryKey: ["exam-attempt", attemptId] }); }} />;
+  }
+  return result.data ? <ExamResultView result={result.data} onBack={exit} /> : null;
+}
 
 export default function ExamSimulator() {
-  const [state, setState] = useState<ExamState>("setup");
-  const [examType, setExamType] = useState("JEE Main");
-  const [index, setIndex] = useState(0);
-  const [answers, setAnswers] = useState<Record<string, number>>({});
-  const [marked, setMarked] = useState<string[]>([]);
-  const [secondsLeft, setSecondsLeft] = useState(30 * 60);
-  const [showSubmit, setShowSubmit] = useState(false);
-  const question = examQuestions[index];
-  const score = examQuestions.reduce((total, item) => total + (answers[item.id] === item.answer ? 4 : 0), 0);
-  const correct = examQuestions.filter((item) => answers[item.id] === item.answer).length;
-  const attempted = Object.keys(answers).length;
-
-  useEffect(() => { if (state !== "running") return; const timer = window.setInterval(() => setSecondsLeft((value) => { if (value <= 1) { window.clearInterval(timer); setState("result"); return 0; } return value - 1; }), 1000); return () => window.clearInterval(timer); }, [state]);
-  const timeLabel = `${String(Math.floor(secondsLeft / 60)).padStart(2, "0")}:${String(secondsLeft % 60).padStart(2, "0")}`;
-  const startExam = () => { setAnswers({}); setMarked([]); setIndex(0); setSecondsLeft(30 * 60); setState("running"); };
-  const toggleMark = () => setMarked((current) => current.includes(question.id) ? current.filter((id) => id !== question.id) : [...current, question.id]);
-  const reset = () => { setState("setup"); setShowSubmit(false); };
-
-  if (state === "result") return <div className="h-full overflow-y-auto"><div className="mx-auto max-w-5xl px-5 py-8 sm:px-8"><div className="mb-8 flex size-12 items-center justify-center rounded-2xl bg-indigo-100 text-indigo-700 dark:bg-indigo-500/15 dark:text-indigo-300"><Trophy size={22} /></div><p className="text-xs font-bold uppercase tracking-[.18em] text-indigo-600 dark:text-indigo-400" data-testid="exam-result-kicker">Simulation complete</p><h1 className="mt-2 font-heading text-4xl font-semibold tracking-tight" data-testid="exam-result-heading">Exam complete</h1><p className="mt-3 text-sm text-slate-500">Use this result as a signal, not a label. Your next practice set should target the gaps below.</p><div className="mt-8 grid grid-cols-2 gap-3 sm:grid-cols-4">{[["Score", `${score} / 40`], ["Accuracy", `${attempted ? Math.round((correct / attempted) * 100) : 0}%`], ["Correct", String(correct)], ["Unattempted", String(examQuestions.length - attempted)]].map(([label, value]) => <div key={label} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm dark:border-slate-800 dark:bg-slate-900"><p className="text-xs text-slate-500">{label}</p><p className="mt-2 font-heading text-2xl font-semibold tracking-tight" data-testid={`exam-result-${label.toLowerCase().replaceAll(" ", "-")}`}>{value}</p></div>)}</div><div className="mt-6 grid gap-6 lg:grid-cols-[1fr_1fr]"><div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"><h2 className="font-heading text-lg font-semibold tracking-tight" data-testid="exam-performance-heading">Subject performance</h2><div className="mt-5 space-y-4">{(["Physics", "Chemistry", "Mathematics"] as const).map((subject) => { const items = examQuestions.filter((item) => item.subject === subject); const scoreFor = items.filter((item) => answers[item.id] === item.answer).length; const percent = Math.round((scoreFor / items.length) * 100); return <div key={subject} data-testid={`exam-subject-${subject.toLowerCase()}`}><div className="mb-1.5 flex justify-between text-sm"><span className="font-semibold">{subject}</span><span className="text-slate-500">{percent}%</span></div><div className="h-2 rounded-full bg-slate-100 dark:bg-slate-800"><div className="h-full rounded-full bg-indigo-600" style={{ width: `${percent}%` }} /></div></div>; })}</div></div><div className="rounded-2xl border border-amber-200 bg-amber-50/70 p-6 dark:border-amber-500/20 dark:bg-amber-500/10"><p className="text-xs font-bold uppercase tracking-wider text-amber-700 dark:text-amber-300">Recommended practice</p><h2 className="mt-3 font-heading text-xl font-semibold tracking-tight text-amber-950 dark:text-amber-100">Target the next weak link</h2><p className="mt-2 text-sm leading-6 text-amber-900/70 dark:text-amber-100/70">Practice 10 questions on Integration and Rotational Motion, then ask PrepMind AI for a concept check.</p><Button onClick={reset} variant="outline" className="mt-5 gap-2 border-amber-300 bg-transparent" data-testid="exam-result-new-button"><RotateCcw size={15} /> New simulation</Button></div></div></div></div>;
-
-  if (state === "setup") return <div className="h-full overflow-y-auto"><div className="mx-auto max-w-5xl px-5 py-8 sm:px-8"><div className="mb-9 max-w-2xl"><div className="mb-3 flex items-center gap-2 text-indigo-600 dark:text-indigo-400"><ShieldCheck size={17} /><span className="text-xs font-bold uppercase tracking-[.18em]">Test your readiness</span></div><h1 className="font-heading text-4xl font-semibold tracking-tight" data-testid="exam-heading">JEE Exam Simulator</h1><p className="mt-3 text-sm leading-6 text-slate-500" data-testid="exam-subtitle">Experience a realistic JEE-style examination environment, then turn the result into your next practice plan.</p></div><div className="grid gap-6 lg:grid-cols-[1fr_310px]"><section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm dark:border-slate-800 dark:bg-slate-900"><div className="mb-6"><h2 className="font-heading text-lg font-semibold tracking-tight">Build your simulation</h2><p className="mt-1 text-xs text-slate-500">Phase 1 uses a focused 10-question demo paper.</p></div><div className="mb-6 grid grid-cols-2 gap-3"><button onClick={() => setExamType("JEE Main")} className={`rounded-xl border p-4 text-left ${examType === "JEE Main" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10" : "border-slate-200 dark:border-slate-700"}`} data-testid="exam-type-main"><span className="block text-sm font-semibold">JEE Main</span><span className="mt-1 block text-xs text-slate-500">Balanced speed + accuracy</span></button><button onClick={() => setExamType("JEE Advanced")} className={`rounded-xl border p-4 text-left ${examType === "JEE Advanced" ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-500/10" : "border-slate-200 dark:border-slate-700"}`} data-testid="exam-type-advanced"><span className="block text-sm font-semibold">JEE Advanced</span><span className="mt-1 block text-xs text-slate-500">Multi-step reasoning</span></button></div><div className="grid gap-4 sm:grid-cols-2"><label className="text-sm font-semibold">Subjects<div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">Physics · Chemistry · Mathematics</div></label><label className="text-sm font-semibold">Questions<div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">10 demo questions</div></label><label className="text-sm font-semibold">Difficulty<div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">{examType === "JEE Main" ? "Mixed Main" : "Advanced focus"}</div></label><label className="text-sm font-semibold">Duration<div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300">30 minutes</div></label></div><Button onClick={startExam} className="mt-7 h-12 w-full gap-2 bg-indigo-600 hover:bg-indigo-700" data-testid="start-exam-button"><Play size={16} fill="currentColor" /> Start {examType} simulation</Button></section><aside className="rounded-2xl border border-indigo-100 bg-indigo-50/70 p-6 dark:border-indigo-500/20 dark:bg-indigo-500/10"><Clock3 size={20} className="text-indigo-600 dark:text-indigo-300" /><h2 className="mt-5 font-heading text-xl font-semibold tracking-tight">A calmer exam habit</h2><p className="mt-2 text-sm leading-6 text-indigo-950/70 dark:text-indigo-100/70">Treat this as a rehearsal. Read carefully, mark uncertain questions, and protect time for review.</p><div className="mt-6 space-y-3 text-xs text-indigo-900/70 dark:text-indigo-100/70"><p>• +4 for a correct answer</p><p>• Question palette shows your state</p><p>• Timer auto-submits at zero</p></div></aside></div></div></div>;
-
-  return <div className="flex h-full min-h-0 flex-col bg-slate-50 dark:bg-slate-950" data-testid="exam-running"><div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-900"><div><p className="text-[10px] font-bold uppercase tracking-[.16em] text-indigo-600 dark:text-indigo-400">PrepMind AI</p><h1 className="mt-1 text-sm font-semibold">{examType} mock test</h1></div><div className={`flex items-center gap-2 rounded-xl border px-3 py-2 font-mono text-sm font-semibold ${secondsLeft < 60 ? "border-rose-300 text-rose-600" : "border-slate-200 text-slate-700 dark:border-slate-700 dark:text-slate-200"}`} data-testid="exam-timer"><Clock3 size={15} /> {timeLabel}</div><Button onClick={() => setShowSubmit(true)} variant="outline" size="sm" data-testid="exam-submit-top-button">Submit exam</Button></div><div className="min-h-0 flex-1 overflow-y-auto"><div className="mx-auto grid max-w-6xl gap-5 p-4 sm:p-6 lg:grid-cols-[minmax(0,1fr)_270px]"><section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-7 dark:border-slate-800 dark:bg-slate-900"><div className="mb-7 flex items-start justify-between"><div><p className="text-xs font-semibold text-slate-500">Question {index + 1} of {examQuestions.length}</p><h2 className="mt-2 font-heading text-xl font-semibold tracking-tight">{question.subject} <span className="font-normal text-slate-400">/ {question.topic}</span></h2></div><button onClick={toggleMark} className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-semibold ${marked.includes(question.id) ? "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" : "text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"}`} data-testid="exam-mark-button"><Flag size={14} /> {marked.includes(question.id) ? "Marked" : "Mark for review"}</button></div><p className="max-w-3xl text-base leading-8 text-slate-800 dark:text-slate-100" data-testid="exam-question-text">{question.question}</p><div className="mt-8 grid gap-3">{question.options.map((option, optionIndex) => <button key={option} onClick={() => setAnswers((current) => ({ ...current, [question.id]: optionIndex }))} className={`flex min-h-14 items-center gap-3 rounded-xl border px-4 text-left text-sm ${answers[question.id] === optionIndex ? "border-indigo-500 bg-indigo-50 text-indigo-800 dark:bg-indigo-500/10 dark:text-indigo-200" : "border-slate-200 bg-slate-50/60 dark:border-slate-700 dark:bg-slate-950"}`} data-testid={`exam-option-${optionIndex}`}><span className="flex size-7 items-center justify-center rounded-lg bg-white text-xs font-bold text-slate-500 dark:bg-slate-800">{String.fromCharCode(65 + optionIndex)}</span>{option}{answers[question.id] === optionIndex && <Check size={16} className="ml-auto text-indigo-600" />}</button>)}</div><div className="mt-8 flex items-center justify-between border-t border-slate-100 pt-5 dark:border-slate-800"><Button variant="outline" disabled={index === 0} onClick={() => setIndex((value) => value - 1)} className="gap-2" data-testid="exam-previous-button"><ArrowLeft size={15} /> Previous</Button><Button onClick={() => index === examQuestions.length - 1 ? setShowSubmit(true) : setIndex((value) => value + 1)} className="gap-2 bg-indigo-600 hover:bg-indigo-700" data-testid="exam-next-button">{index === examQuestions.length - 1 ? "Review exam" : "Save & next"}<ArrowRight size={15} /></Button></div></section><aside className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900"><div className="mb-4 flex items-center justify-between"><h2 className="text-sm font-semibold">Question palette</h2><span className="text-xs text-slate-400">{attempted}/{examQuestions.length}</span></div><div className="grid grid-cols-5 gap-2">{examQuestions.map((item, itemIndex) => <button key={item.id} onClick={() => setIndex(itemIndex)} className={`relative flex size-9 items-center justify-center rounded-lg text-xs font-semibold ${item.id === question.id ? "ring-2 ring-indigo-500 ring-offset-2 dark:ring-offset-slate-900" : ""} ${answers[item.id] !== undefined ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/15 dark:text-emerald-300" : marked.includes(item.id) ? "bg-amber-100 text-amber-700 dark:bg-amber-500/15 dark:text-amber-300" : "bg-slate-100 text-slate-500 dark:bg-slate-800"}`} data-testid={`exam-palette-${itemIndex + 1}`}>{itemIndex + 1}</button>)}</div><div className="mt-6 space-y-2 border-t border-slate-100 pt-4 text-xs text-slate-500 dark:border-slate-800"><p><span className="mr-2 inline-block size-2 rounded-full bg-emerald-500" />Answered</p><p><span className="mr-2 inline-block size-2 rounded-full bg-amber-500" />Marked for review</p><p><span className="mr-2 inline-block size-2 rounded-full bg-slate-300" />Not visited</p></div></aside></div></div>{showSubmit && <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4 backdrop-blur-sm"><div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-xl dark:border-slate-700 dark:bg-slate-900" role="dialog" aria-modal="true" data-testid="exam-submit-dialog"><h2 className="font-heading text-xl font-semibold tracking-tight">Submit exam?</h2><p className="mt-2 text-sm leading-6 text-slate-500">You can still continue if you want to review the paper once more.</p><div className="mt-5 grid grid-cols-3 gap-2 text-center">{[["Answered", attempted], ["Unanswered", examQuestions.length - attempted], ["Review", marked.length]].map(([label, value]) => <div key={String(label)} className="rounded-xl bg-slate-50 p-3 dark:bg-slate-800"><p className="text-lg font-semibold">{value}</p><p className="mt-1 text-[10px] uppercase tracking-wider text-slate-400">{label}</p></div>)}</div><div className="mt-6 flex justify-end gap-2"><Button variant="outline" onClick={() => setShowSubmit(false)} data-testid="exam-continue-button">Continue exam</Button><Button onClick={() => { setShowSubmit(false); setState("result"); }} className="bg-indigo-600 hover:bg-indigo-700" data-testid="exam-confirm-submit-button">Submit exam</Button></div></div></div>}</div>;
+  const [params, setParams] = useSearchParams();
+  const attemptId = params.get("attempt");
+  const open = (id: string) => setParams({ attempt: id });
+  if (!attemptId) return <ExamSetup onOpen={open} />;
+  return <AttemptView key={attemptId} attemptId={attemptId} onOpen={open} onExit={() => setParams({})} />;
 }

@@ -31,6 +31,8 @@ dist/
 dist
 
 # Environment files (comprehensive coverage)
+.env
+*.env.local
 
 *token.json*
 *credentials.json*
@@ -62,6 +64,10 @@ chainlit.md
 .vercel
 
 # Data and databases
+backend/data/cache/
+# Knowledge-base PDFs (NCERT books, JEE papers): copyrighted and ~350 MB, kept locally only.
+# Layout: backend/data/knowledge_base/{books,formulas,previous_year_questions}/...
+backend/data/knowledge_base/
 agenthub/agents/youtube/db
 
 # Archive files and large assets
