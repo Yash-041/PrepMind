@@ -10,7 +10,4 @@ backend/tests
 **/__pycache__
 **/*.pyc
 frontend
-memory
-tests
-test_reports
 **/*.zip

@@ -1,5 +1,5 @@
 import { getAccessToken, clearSession, saveSession, type SessionUser } from "./session";
-import type { ExamAnswerUpdate, ExamAttempt, ExamBankStatus, ExamHistoryItem, ExamResult, ExamTemplate, DailyResult, DailySet, DailyStreak, Message, ProgressReport } from "./types";
+import type { ExamAnswerUpdate, ExamAttempt, ExamBankStatus, ExamHistoryItem, ExamResult, DailyResult, DailySet, DailyStreak, Message, ProgressReport } from "./types";
 
 // Empty by default: requests go to /api/... and Vite proxies them to the backend.
 const API_BASE = (import.meta.env.VITE_API_BASE_URL || "").replace(/\/+$/, "");
@@ -198,24 +198,7 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
-  // RAG Tutor Chats
-  listChats: () => request<any[]>("/api/chats"),
-  createChat: (title?: string, subject?: string) =>
-    request<any>("/api/chats", {
-      method: "POST",
-      body: JSON.stringify({ title, subject }),
-    }),
-  getChat: (chatId: string) => request<any>(`/api/chats/${chatId}`),
-  sendMessage: (chatId: string, content: string) =>
-    request<any>(`/api/chats/${chatId}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    }),
-  renameChat: (chatId: string, title: string) =>
-    request<any>(`/api/chats/${chatId}`, {
-      method: "PATCH",
-      body: JSON.stringify({ title }),
-    }),
+  // RAG Tutor Chats (listing, creating and loading chats use apiGet/apiPost in Home and AppShell)
   deleteChat: (chatId: string) =>
     request<void>(`/api/chats/${chatId}`, { method: "DELETE" }),
 
@@ -235,10 +218,8 @@ export const api = {
   getDailyResult: (setId: string) =>
     request<DailyResult>(`/api/daily-practice/${setId}/result`),
   getDailyStreak: () => request<DailyStreak>("/api/daily-practice/streak"),
-  getDailyHistory: () => request<any[]>("/api/daily-practice/history"),
 
   // Exam Simulator
-  getExamTemplates: () => request<ExamTemplate[]>("/api/exams/templates"),
   getExamBankStatus: () => request<ExamBankStatus>("/api/exams/bank-status"),
   /** Starts preparing a paper, or returns the one already being prepared or taken. */
   startExamAttempt: (templateCode = "JEE_MAIN_FULL") =>
@@ -265,7 +246,5 @@ export const api = {
 
   // Progress & Weak Topics
   getProgressOverview: () => request<any>("/api/progress/overview"),
-  getWeakTopics: () => request<any[]>("/api/progress/weak-topics"),
-  getSubjectProgress: () => request<any[]>("/api/progress/subjects"),
   getProgressReport: () => request<ProgressReport>("/api/progress/report"),
 };

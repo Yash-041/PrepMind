@@ -69,7 +69,6 @@ PrepMind/
   docker-compose.yml       PostgreSQL + pgvector on host port 5433
   working.txt              This document
   myvenv/                  Python virtual environment
-  memory/SPEC.md           Original Phase 1 spec (outdated: describes mocks)
 
   backend/
     server.py              FastAPI app: CORS, routers, startup (init_db + seeding)

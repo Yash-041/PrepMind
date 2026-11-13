@@ -4,7 +4,6 @@ Never uses Python eval(). Safely parses algebraic/numerical expressions
 with restricted character sets and strict complexity bounds.
 """
 import re
-from typing import Optional
 import sympy as sp
 from sympy.parsing.sympy_parser import (
     parse_expr,
@@ -83,11 +82,6 @@ def safe_parse(expr_str: str) -> sp.Expr:
     )
 
 
-def simplify_expression(expr_str: str) -> str:
-    expr = safe_parse(expr_str)
-    return str(sp.simplify(expr))
-
-
 def are_expressions_equivalent(
     expr_a: str, expr_b: str, tolerance: float = 1e-3
 ) -> bool:
@@ -112,11 +106,3 @@ def are_expressions_equivalent(
         return diff == 0
     except Exception:
         return False
-
-
-def verify_question_math(
-    lhs_expr: Optional[str], rhs_expected: Optional[str]
-) -> bool:
-    if not lhs_expr or not rhs_expected:
-        return True
-    return are_expressions_equivalent(lhs_expr, rhs_expected)
