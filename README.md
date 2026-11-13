@@ -1,3 +1,6 @@
+> **PrepMind AI:** to install and run this project (including the data that isn't on GitHub), see **[SETUP.md](SETUP.md)**.
+> The text below is the original starter template and is out of date.
+
 # farm-ts
 
 Minimal split backend/frontend starter: **FastAPI + MongoDB** behind a

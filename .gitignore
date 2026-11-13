@@ -68,6 +68,9 @@ backend/data/cache/
 # Knowledge-base PDFs (NCERT books, JEE papers): copyrighted and ~350 MB, kept locally only.
 # Layout: backend/data/knowledge_base/{books,formulas,previous_year_questions}/...
 backend/data/knowledge_base/
+# Database exports hold users' data and password hashes: never commit them.
+*.dump
+*.sql.gz
 agenthub/agents/youtube/db
 
 # Archive files and large assets
