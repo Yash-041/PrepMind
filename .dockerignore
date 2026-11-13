@@ -13,5 +13,4 @@ frontend
 memory
 tests
 test_reports
-.emergent
 **/*.zip
